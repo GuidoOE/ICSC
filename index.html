@@ -598,6 +598,256 @@ select.field-select:focus { border-color: var(--bd-primary); box-shadow: 0 0 0 3
 .mon-item__sub { font-size: 11px; color: var(--tx-lighter); margin-top: 2px; }
 .mon-item__right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ── Supabase client ──────────────────────────────
+const SUPA_URL = 'https://kjnpdzjqyixyrlrqlyhv.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqbnBkempxeWl4eXJscnFseWh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1OTM3ODEsImV4cCI6MjA5NDE2OTc4MX0.W5UqzNHs6IZxkDo1JIX67LduMlXORX8i48sXsmG9RsQ';
+const { createClient } = supabase;
+const db = createClient(SUPA_URL, SUPA_KEY);
+
+// ── API helpers ──────────────────────────────────
+const DB = {
+  // PRATICHE
+  async getPratiche() {
+    const { data, error } = await db.from('pratiche').select('*').order('created_at', { ascending: false });
+    if (error) console.error('getPratiche:', error);
+    return data || [];
+  },
+  async getPratica(id) {
+    const { data, error } = await db.from('pratiche').select('*').eq('id', id).single();
+    if (error) console.error('getPratica:', error);
+    return data;
+  },
+  async upsertPratica(pratica) {
+    const { data, error } = await db.from('pratiche').upsert(pratica).select().single();
+    if (error) { console.error('upsertPratica:', error); return null; }
+    return data;
+  },
+
+  // SVINCOLI
+  async getSvincoli(praticaId) {
+    const { data, error } = await db.from('svincoli').select('*').eq('pratica_id', praticaId).order('progressivo');
+    if (error) console.error('getSvincoli:', error);
+    return data || [];
+  },
+  async upsertSvincolo(svincolo) {
+    const { data, error } = await db.from('svincoli').upsert(svincolo).select().single();
+    if (error) { console.error('upsertSvincolo:', error); return null; }
+    return data;
+  },
+  async updateStatoSvincolo(id, stato) {
+    const { error } = await db.from('svincoli').update({ stato, updated_at: new Date().toISOString() }).eq('id', id);
+    if (error) console.error('updateStatoSvincolo:', error);
+    return !error;
+  },
+
+  // AVANZAMENTI
+  async getAvanzamenti(praticaId) {
+    const { data, error } = await db.from('avanzamenti').select('*').eq('pratica_id', praticaId).order('data_prevista', { ascending: true, nullsFirst: false });
+    if (error) console.error('getAvanzamenti:', error);
+    return data || [];
+  },
+  async insertAvanzamento(av) {
+    const { data, error } = await db.from('avanzamenti').insert(av).select().single();
+    if (error) { console.error('insertAvanzamento:', error); return null; }
+    return data;
+  },
+
+  // CATENE DOCUMENTALI
+  async getCatene(praticaId) {
+    const { data, error } = await db.from('catene_documentali').select('*').eq('pratica_id', praticaId).order('created_at');
+    if (error) console.error('getCatene:', error);
+    return data || [];
+  },
+
+  // QUADRO ECONOMICO
+  async getQuadroEconomico(praticaId) {
+    const { data, error } = await db.from('quadro_economico').select('*').eq('pratica_id', praticaId).order('ordinamento');
+    if (error) console.error('getQuadroEco:', error);
+    return data || [];
+  },
+  async upsertVoceQE(voce) {
+    const { data, error } = await db.from('quadro_economico').upsert(voce).select().single();
+    if (error) { console.error('upsertVoceQE:', error); return null; }
+    return data;
+  },
+
+  // PREVENTIVO DI SPESA
+  async getPreventivoSpesa(praticaId) {
+    const { data, error } = await db.from('preventivo_spesa').select('*').eq('pratica_id', praticaId).order('ordinamento');
+    if (error) console.error('getPreventivo:', error);
+    return data || [];
+  },
+};
+
+// ── Carica lista pratiche in dashboard ─────────────
+async function loadDashboardPratiche() {
+  const pratiche = await DB.getPratiche();
+  const container = document.querySelector('#page-dashboard .stack');
+  if (!container || !pratiche.length) return;
+
+  // Rimuovi le pratiche singole demo statiche
+  const singoleSection = container.querySelector('[data-pratiche-singole]');
+
+  // Render dinamico
+  const existingCards = container.querySelectorAll('[data-pratica-card]');
+  existingCards.forEach(c => c.remove());
+
+  pratiche.forEach(p => {
+    const card = document.createElement('div');
+    card.setAttribute('data-pratica-card', p.id);
+    card.style.cssText = 'border:1px solid var(--bd-sec-light);border-radius:var(--r-smooth);background:var(--bg-inverse);margin-bottom:8px;overflow:hidden;transition:box-shadow .15s';
+    card.onmouseover = function(){ this.style.boxShadow='0 2px 12px rgba(68,0,179,.1)'; };
+    card.onmouseout  = function(){ this.style.boxShadow=''; };
+
+    const importo = p.importo_deliberato
+      ? '€ ' + parseFloat(p.importo_deliberato).toLocaleString('it-IT', {minimumFractionDigits:2})
+      : '—';
+
+    card.innerHTML = `
+      <div style="display:flex;align-items:stretch;gap:0">
+        <div style="flex:1;padding:16px 20px;cursor:pointer" onclick="goPratica()">
+          <div style="font-size:15px;font-weight:700;color:var(--tx-primary);margin-bottom:3px">${p.denominazione}</div>
+          <div style="font-size:11px;color:var(--tx-lighter);font-family:var(--ff-mono)">CUP/ID Rapporto ${p.codice_rapporto}</div>
+          <div style="display:flex;gap:20px;margin-top:10px;font-size:12px;color:var(--tx-lighter)">
+            <div><span style="font-weight:600;color:var(--tx-primary)">Tipo</span><br>${p.tipo_mutuo || '—'}</div>
+            <div><span style="font-weight:600;color:var(--tx-primary)">Comune</span><br>${p.comune || '—'}</div>
+            <div><span style="font-weight:600;color:var(--tx-primary)">Avvio</span><br>${p.data_avvio ? new Date(p.data_avvio).toLocaleDateString('it-IT') : '—'}</div>
+          </div>
+        </div>
+        <div style="width:1px;background:var(--bd-sec-light);flex-shrink:0"></div>
+        <div style="width:200px;padding:16px 20px;display:flex;flex-direction:column;justify-content:center;flex-shrink:0">
+          <div style="font-size:13px;font-weight:700;color:var(--tx-primary);margin-bottom:2px">${importo}</div>
+          <div style="font-size:11px;color:var(--tx-lighter);margin-bottom:10px">Importo deliberato</div>
+        </div>
+        <div style="width:32px;background:var(--bg-sec-lighter);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0" onclick="goPratica()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--tx-lighter)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>`;
+    container.appendChild(card);
+  });
+
+  // Aggiorna contatore sezione
+  const label = container.querySelector('[data-pratiche-singole-label]');
+  if (label) label.textContent = `${pratiche.length} pratiche`;
+}
+
+// ── Carica avanzamenti procedurali in dashboard pratica ──
+async function loadAvanzamentiDashboard(praticaId) {
+  if (!praticaId) return;
+  const avanzamenti = await DB.getAvanzamenti(praticaId);
+  const container = document.getElementById('avanz-proc-container');
+  if (!container) return;
+
+  // Filtra solo In corso e Pianificati
+  const attivi = avanzamenti.filter(a =>
+    a.stato === 'In corso' || a.stato === 'Pianificato'
+  );
+
+  if (!attivi.length) {
+    container.innerHTML = '<div style="font-size:13px;color:var(--tx-lighter);padding:8px 0">Nessun avanzamento pianificato o in lavorazione.</div>';
+    return;
+  }
+
+  container.innerHTML = attivi.map((a, i) => {
+    const isCorso = a.stato === 'In corso';
+    const dotClass = isCorso ? 'step__dot--active' : 'step__dot--todo';
+    const dotContent = isCorso ? '&#9679;' : (i + 1);
+    const lineStyle = i < attivi.length - 1 ? '<div class="step__line"></div>' : '';
+    const dataStr = a.data_prevista
+      ? `<span style="font-size:11px;color:${isCorso ? 'var(--tx-warning)' : 'var(--tx-lighter)'}">${isCorso ? 'Scadenza stimata' : 'Data prevista'}: <strong>${new Date(a.data_prevista).toLocaleDateString('it-IT')}</strong></span>`
+      : '';
+    const semColor = isCorso ? 'sem--arancio' : 'sem--grigio';
+    return `<div class="step">
+      <div class="step__spine">
+        <div class="step__dot ${dotClass}">${dotContent}</div>
+        ${lineStyle}
+      </div>
+      <div class="step__info">
+        <div class="step__title${isCorso ? '' : ' step__title--todo'}">${a.descrizione}</div>
+        <div class="step__sub">${a.tipologia} · ${a.responsabile || '—'}</div>
+        <div class="mt-4" style="display:flex;flex-direction:column;gap:3px">
+          <span class="sem ${semColor}"><span class="sem__dot"></span>${a.stato}</span>
+          ${dataStr}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Carica svincoli in storico richieste ────────────
+async function loadSvincoli(praticaId) {
+  if (!praticaId) return;
+  const svincoli = await DB.getSvincoli(praticaId);
+  const tbody = document.querySelector('#tab-richieste .tbl tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = svincoli.map(s => {
+    const tipoTag = s.tipo === 'SAL'
+      ? `<span class="tag tag--sal">${s.tipo} ${s.progressivo}</span>`
+      : `<span class="tag tag--saldo">${s.tipo}</span>`;
+    const importo = s.importo_richiesto
+      ? '€ ' + parseFloat(s.importo_richiesto).toLocaleString('it-IT', {minimumFractionDigits:2})
+      : '—';
+    const dataErog = s.data_erogazione
+      ? new Date(s.data_erogazione).toLocaleDateString('it-IT')
+      : '<span style="color:var(--tx-lighter)">— in attesa</span>';
+    const statoSem = s.stato === 'Erogato' ? 'sem--verde'
+      : s.stato === 'In firma N.O.' ? 'sem--viola'
+      : s.stato === 'N.O. disponibile' ? 'sem--verde'
+      : 'sem--arancio';
+    return `<tr>
+      <td class="mono">${s.id.substring(0,8)}</td>
+      <td>${tipoTag}</td>
+      <td class="mono">${s.data_richiesta ? new Date(s.data_richiesta).toLocaleDateString('it-IT') : '—'}</td>
+      <td class="mono">${s.progressivo}</td>
+      <td class="mono" style="font-weight:700">${importo}</td>
+      <td class="mono">${dataErog}</td>
+      <td><span class="sem ${statoSem}"><span class="sem__dot"></span>${s.stato}</span></td>
+      <td><button class="btn btn--tertiary btn--xs" onclick="openSalDetail('${s.id}')">Apri</button></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── ID pratica corrente (demo: prima pratica) ───────
+let _currentPraticaId = null;
+
+async function initPratica() {
+  const pratiche = await DB.getPratiche();
+  if (!pratiche.length) return;
+  _currentPraticaId = pratiche[0].id;
+  await loadAvanzamentiDashboard(_currentPraticaId);
+  await loadSvincoli(_currentPraticaId);
+}
+
+// ── Init al login ───────────────────────────────────
+const _origDoLogin = typeof doLogin !== 'undefined' ? doLogin : null;
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const pwd   = document.getElementById('login-password').value.trim();
+  if (!email || !pwd) {
+    document.getElementById('login-error').classList.add('is-visible');
+    return;
+  }
+  document.getElementById('login-error').classList.remove('is-visible');
+  document.getElementById('login-screen').classList.add('is-hidden');
+  document.getElementById('app-shell').style.display = 'flex';
+  // Carica dati dal database
+  await loadDashboardPratiche();
+  await initPratica();
+}
+
+// ── Toast notifica ──────────────────────────────────
+function showToast(msg, type) {
+  var t = document.createElement('div');
+  t.style.cssText = 'position:fixed;bottom:80px;right:24px;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.15);'
+    + (type === 'error' ? 'background:#d94040;color:#fff' : 'background:#2d9b6f;color:#fff');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+</script>
 </head>
 <body>
 
@@ -1007,6 +1257,7 @@ select.field-select:focus { border-color: var(--bd-primary); box-shadow: 0 0 0 3
             <span style="font-size:11px;color:var(--tx-lighter)">Pianificate e in lavorazione</span>
           </div>
           <div class="card__body">
+            <div id="avanz-proc-container">
             <div class="step">
               <div class="step__spine">
                 <div class="step__dot step__dot--active">&#9679;</div>
